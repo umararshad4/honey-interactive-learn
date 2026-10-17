@@ -1,0 +1,18 @@
+[package]
+name = "hil-desktop"
+description = "Desktop app for Honey Interactive Learn: paste a YouTube or X link, get a lesson."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+# No `rust-version.workspace`: GPUI needs a newer toolchain than the workspace minimum.
+
+[[bin]]
+name = "hil-desktop"
+path = "src/main.rs"
+
+[dependencies]
+hil-core = { workspace = true }
+anyhow = { workspace = true }
+gpui-kit = "0.7"

@@ -1,0 +1,19 @@
+[package]
+name = "hil-core"
+description = "Core library for Honey Interactive Learn: extract YouTube/X content and turn it into lessons."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+dirs = "6"
+tempfile = "3"
+ureq = { version = "3", features = ["json"] }
+url = "2"
