@@ -87,18 +87,20 @@ impl Settings {
     }
 
     /// Writes the file readable by the current user only (it may hold API keys).
+    ///
+    /// The temp file is created with mode 0600 before any bytes are written
+    /// (`tempfile` uses `O_EXCL`, so it never follows a planted symlink), then
+    /// renamed into place atomically.
     pub fn save_to(&self, path: &Path) -> Result<()> {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(self)?)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
-        }
-        std::fs::rename(&tmp, path).with_context(|| format!("could not save {}", path.display()))
+        use std::io::Write;
+        let dir = path.parent().unwrap_or(Path::new("."));
+        std::fs::create_dir_all(dir)?;
+        let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
+        tmp.write_all(&serde_json::to_vec_pretty(self)?)?;
+        tmp.as_file().sync_all()?;
+        tmp.persist(path)
+            .with_context(|| format!("could not save {}", path.display()))?;
+        Ok(())
     }
 
     /// Sets a field by its `hil config` name. An empty value clears it.
