@@ -13,6 +13,7 @@ use hil_core::source::Link;
 
 use crate::jobs::{Job, JobInput, JobRequest, JobUpdate};
 use crate::lesson_view::{LessonTab, ViewState};
+use crate::settings_view::{SettingsEvent, SettingsView};
 
 /// Startup choices, mostly useful for screenshots and debugging.
 #[derive(Default)]
@@ -20,6 +21,8 @@ pub struct StartOptions {
     /// Id (or id prefix) of the lesson to select on launch.
     pub select: Option<String>,
     pub tab: Option<LessonTab>,
+    /// Open the Settings screen on launch.
+    pub settings: bool,
 }
 
 struct RunningJob {
@@ -38,6 +41,7 @@ pub struct HilApp {
     pub(crate) error: Option<String>,
     pub(crate) notice: Option<String>,
     pub(crate) view: ViewState,
+    pub(crate) settings: Option<(Entity<SettingsView>, Subscription)>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -70,6 +74,7 @@ impl HilApp {
             error,
             notice: None,
             view: ViewState::default(),
+            settings: None,
             _subscriptions: subscriptions,
         };
         app.reload();
@@ -84,6 +89,9 @@ impl HilApp {
         }
         if let Some(tab) = opts.tab {
             app.view.tab = tab;
+        }
+        if opts.settings {
+            app.open_settings(window, cx);
         }
         app
     }
@@ -114,6 +122,19 @@ impl HilApp {
         self.view = ViewState::for_lesson(lesson, self.view.tab);
         self.selected = Some(id.to_string());
         self.notice = None;
+        self.settings = None;
+    }
+
+    pub(crate) fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let view = cx.new(|cx| SettingsView::new(window, cx));
+        let sub = cx.subscribe(&view, |this, _, ev: &SettingsEvent, cx| match ev {
+            SettingsEvent::Close => {
+                this.settings = None;
+                cx.notify();
+            }
+        });
+        self.settings = Some((view, sub));
+        cx.notify();
     }
 
     pub(crate) fn busy(&self) -> bool {

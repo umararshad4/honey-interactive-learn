@@ -5,7 +5,9 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Input;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::{ActiveTheme, Disableable as _, IconName, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{
+    ActiveTheme, Disableable as _, IconName, Selectable as _, Sizable as _, h_flex, v_flex,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use hil_core::model::{Depth, Lesson, Style};
@@ -67,10 +69,30 @@ impl HilApp {
             .border_b_1()
             .border_color(theme.sidebar_border)
             .child(
-                div()
-                    .text_lg()
-                    .font_semibold()
-                    .child("Honey Interactive Learn"),
+                h_flex()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_semibold()
+                            .child("Honey Interactive Learn"),
+                    )
+                    .child(
+                        Button::new("open-settings")
+                            .icon(IconName::Settings)
+                            .ghost()
+                            .small()
+                            .tooltip("Settings")
+                            .selected(self.settings.is_some())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                if this.settings.is_some() {
+                                    this.settings = None;
+                                    cx.notify();
+                                } else {
+                                    this.open_settings(window, cx);
+                                }
+                            })),
+                    ),
             )
             .child(Input::new(&self.url_input).disabled(busy))
             .child(ui::caption("Style", cx))

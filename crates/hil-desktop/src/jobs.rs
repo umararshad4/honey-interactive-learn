@@ -65,7 +65,7 @@ impl Job {
 
 fn run(req: JobRequest, progress: &dyn Fn(&str)) -> Result<Lesson> {
     // Fail fast when no model is available, before any download.
-    let backend = build_backend(&BackendConfig::from_env())?;
+    let backend = build_backend(&BackendConfig::load())?;
     let source = match req.input {
         JobInput::Url(url) => {
             progress("Fetching the source…");

@@ -6,6 +6,7 @@ pub mod llm;
 pub mod markdown;
 pub mod model;
 pub mod quiz;
+pub mod settings;
 pub mod source;
 
 use anyhow::{Context, Result};

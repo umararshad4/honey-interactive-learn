@@ -2,18 +2,24 @@
 
 mod anthropic;
 mod claude_cli;
+mod gemini;
+mod openai;
 pub mod prompt;
 
 use std::fmt;
 use std::str::FromStr;
 
 use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
 pub use anthropic::{AnthropicApi, parse_sse_stream};
 pub use claude_cli::ClaudeCli;
+pub use gemini::GeminiApi;
+pub use openai::OpenAiApi;
 
 use crate::model::LessonContent;
+use crate::settings::Settings;
 use crate::source::tools::find_program;
 
 /// One structured-output request.
@@ -24,7 +30,7 @@ pub struct GenerateRequest<'a> {
 }
 
 pub trait LlmBackend: Send + Sync {
-    /// Short label stored with each lesson, e.g. `claude-cli` or `api:claude-opus-5-5`.
+    /// Short label stored with each lesson, e.g. `claude-cli` or `openai:gpt-6-astra`.
     fn label(&self) -> String;
     /// Returns a JSON value that matches `req.schema`.
     fn generate(&self, req: &GenerateRequest) -> Result<Value>;
@@ -32,11 +38,44 @@ pub trait LlmBackend: Send + Sync {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BackendChoice {
-    /// API when `ANTHROPIC_API_KEY` is set, otherwise the `claude` CLI.
+    /// First available: Anthropic key, OpenAI key, Gemini key, then the `claude` CLI.
     #[default]
     Auto,
     ClaudeCli,
-    Api,
+    Anthropic,
+    OpenAi,
+    Gemini,
+}
+
+impl BackendChoice {
+    pub const ALL: [BackendChoice; 5] = [
+        Self::Auto,
+        Self::ClaudeCli,
+        Self::Anthropic,
+        Self::OpenAi,
+        Self::Gemini,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::ClaudeCli => "claude-cli",
+            Self::Anthropic => "anthropic",
+            Self::OpenAi => "openai",
+            Self::Gemini => "gemini",
+        }
+    }
+
+    /// Human name for UIs.
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Auto => "Auto",
+            Self::ClaudeCli => "Claude Code CLI",
+            Self::Anthropic => "Anthropic API",
+            Self::OpenAi => "OpenAI API",
+            Self::Gemini => "Google Gemini API",
+        }
+    }
 }
 
 impl FromStr for BackendChoice {
@@ -46,9 +85,11 @@ impl FromStr for BackendChoice {
         match s.trim().to_ascii_lowercase().as_str() {
             "auto" => Ok(Self::Auto),
             "claude-cli" | "cli" | "claude" => Ok(Self::ClaudeCli),
-            "api" | "anthropic" => Ok(Self::Api),
+            "anthropic" | "api" => Ok(Self::Anthropic),
+            "openai" | "gpt" => Ok(Self::OpenAi),
+            "gemini" | "google" => Ok(Self::Gemini),
             other => Err(format!(
-                "unknown backend `{other}`, expected auto, claude-cli or api"
+                "unknown backend `{other}`, expected auto, claude-cli, anthropic, openai or gemini"
             )),
         }
     }
@@ -56,74 +97,123 @@ impl FromStr for BackendChoice {
 
 impl fmt::Display for BackendChoice {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::Auto => "auto",
-            Self::ClaudeCli => "claude-cli",
-            Self::Api => "api",
-        })
+        f.write_str(self.label())
     }
 }
 
+impl Serialize for BackendChoice {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.label())
+    }
+}
+
+impl<'de> Deserialize<'de> for BackendChoice {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        String::deserialize(d)?
+            .parse()
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+/// Everything needed to pick and build a backend: settings file + environment + overrides.
 #[derive(Debug, Clone, Default)]
 pub struct BackendConfig {
     pub choice: BackendChoice,
-    /// Model override. API default: `claude-opus-5-5`; CLI default: your Claude Code default.
+    /// Model for this run; otherwise the provider's model from settings, then its default.
     pub model: Option<String>,
-    /// API effort: low, medium, high, xhigh or max.
+    /// Reasoning effort for API providers: low, medium, high, xhigh or max.
     pub effort: Option<String>,
+    /// Keys and per-provider models, with environment variables applied.
+    pub settings: Settings,
 }
 
 impl BackendConfig {
-    /// Reads `HIL_BACKEND`, `HIL_MODEL` and `HIL_EFFORT`.
-    pub fn from_env() -> Self {
-        let get = |k| {
-            std::env::var(k)
-                .ok()
-                .filter(|v: &String| !v.trim().is_empty())
-        };
+    /// Loads `settings.json`, then applies environment variables on top.
+    pub fn load() -> Self {
+        Self::from_settings(Settings::load().unwrap_or_default())
+    }
+
+    pub fn from_settings(mut settings: Settings) -> Self {
+        let get = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
+        if let Some(k) = get("ANTHROPIC_API_KEY") {
+            settings.anthropic_api_key = Some(k);
+        }
+        if let Some(k) = get("OPENAI_API_KEY") {
+            settings.openai_api_key = Some(k);
+        }
+        if let Some(k) = get("GEMINI_API_KEY").or_else(|| get("GOOGLE_API_KEY")) {
+            settings.gemini_api_key = Some(k);
+        }
+        let choice = get("HIL_BACKEND")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(settings.backend);
         Self {
-            choice: get("HIL_BACKEND")
-                .and_then(|v| v.parse().ok())
-                .unwrap_or_default(),
+            choice,
             model: get("HIL_MODEL"),
-            effort: get("HIL_EFFORT"),
+            effort: get("HIL_EFFORT").or_else(|| settings.effort.clone()),
+            settings,
         }
     }
-}
 
-pub fn api_key() -> Option<String> {
-    std::env::var("ANTHROPIC_API_KEY")
-        .ok()
-        .filter(|k| !k.trim().is_empty())
+    /// The provider `Auto` resolves to, or an error explaining how to set one up.
+    pub fn resolve(&self) -> Result<BackendChoice> {
+        let s = &self.settings;
+        let resolved = match self.choice {
+            BackendChoice::Auto => {
+                if s.anthropic_api_key.is_some() {
+                    BackendChoice::Anthropic
+                } else if s.openai_api_key.is_some() {
+                    BackendChoice::OpenAi
+                } else if s.gemini_api_key.is_some() {
+                    BackendChoice::Gemini
+                } else if find_program("claude").is_some() {
+                    BackendChoice::ClaudeCli
+                } else {
+                    bail!(
+                        "no language model available. Set up one of:\n  • an API key: `hil config set anthropic-key|openai-key|gemini-key <key>` (or the desktop Settings)\n  • ANTHROPIC_API_KEY, OPENAI_API_KEY or GEMINI_API_KEY in your environment\n  • Claude Code (https://claude.com/claude-code), logged in, so `claude` is on PATH"
+                    );
+                }
+            }
+            other => other,
+        };
+        Ok(resolved)
+    }
 }
 
 /// Builds the backend described by `config`.
 pub fn build_backend(config: &BackendConfig) -> Result<Box<dyn LlmBackend>> {
-    let use_api = match config.choice {
-        BackendChoice::Api => true,
-        BackendChoice::ClaudeCli => false,
-        BackendChoice::Auto => {
-            if api_key().is_some() {
-                true
-            } else if find_program("claude").is_some() {
-                false
-            } else {
-                bail!(
-                    "no language model available.\n  • set ANTHROPIC_API_KEY to use the Anthropic API, or\n  • install Claude Code (https://claude.com/claude-code) and log in, so `claude` is on PATH"
-                );
-            }
-        }
+    let s = &config.settings;
+    let model = |saved: &Option<String>| config.model.clone().or_else(|| saved.clone());
+    let missing = |provider: &str, field: &str, env: &str| {
+        format!(
+            "no {provider} API key. Run `hil config set {field} <key>`, add it in the desktop Settings, or export {env}"
+        )
     };
-    if use_api {
-        let key = api_key().context("ANTHROPIC_API_KEY is not set")?;
-        Ok(Box::new(AnthropicApi::new(
-            key,
-            config.model.clone(),
+    Ok(match config.resolve()? {
+        BackendChoice::Anthropic => Box::new(AnthropicApi::new(
+            s.anthropic_api_key
+                .clone()
+                .with_context(|| missing("Anthropic", "anthropic-key", "ANTHROPIC_API_KEY"))?,
+            model(&s.anthropic_model),
             config.effort.clone(),
-        )))
-    } else {
-        Ok(Box::new(ClaudeCli::new(config.model.clone())))
-    }
+        )),
+        BackendChoice::OpenAi => Box::new(OpenAiApi::new(
+            s.openai_api_key
+                .clone()
+                .with_context(|| missing("OpenAI", "openai-key", "OPENAI_API_KEY"))?,
+            model(&s.openai_model),
+            config.effort.clone(),
+        )),
+        BackendChoice::Gemini => Box::new(GeminiApi::new(
+            s.gemini_api_key
+                .clone()
+                .with_context(|| missing("Gemini", "gemini-key", "GEMINI_API_KEY"))?,
+            model(&s.gemini_model),
+        )),
+        BackendChoice::ClaudeCli | BackendChoice::Auto => {
+            Box::new(ClaudeCli::new(model(&s.claude_cli_model)))
+        }
+    })
 }
 
 /// Cleans model output so the UIs can trust it.
@@ -209,7 +299,79 @@ mod tests {
             "CLI".parse::<BackendChoice>().unwrap(),
             BackendChoice::ClaudeCli
         );
-        assert_eq!("api".parse::<BackendChoice>().unwrap(), BackendChoice::Api);
-        assert!("gpt".parse::<BackendChoice>().is_err());
+        assert_eq!(
+            "api".parse::<BackendChoice>().unwrap(),
+            BackendChoice::Anthropic
+        );
+        assert_eq!(
+            "OpenAI".parse::<BackendChoice>().unwrap(),
+            BackendChoice::OpenAi
+        );
+        assert_eq!(
+            "gemini".parse::<BackendChoice>().unwrap(),
+            BackendChoice::Gemini
+        );
+        assert!("llama".parse::<BackendChoice>().is_err());
+        for c in BackendChoice::ALL {
+            assert_eq!(c.label().parse::<BackendChoice>().unwrap(), c);
+        }
+    }
+
+    fn config(choice: BackendChoice, settings: Settings) -> BackendConfig {
+        BackendConfig {
+            choice,
+            model: None,
+            effort: None,
+            settings,
+        }
+    }
+
+    #[test]
+    fn auto_prefers_keys_in_order() {
+        let mut s = Settings {
+            gemini_api_key: Some("g".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            config(BackendChoice::Auto, s.clone()).resolve().unwrap(),
+            BackendChoice::Gemini
+        );
+        s.openai_api_key = Some("o".into());
+        assert_eq!(
+            config(BackendChoice::Auto, s.clone()).resolve().unwrap(),
+            BackendChoice::OpenAi
+        );
+        s.anthropic_api_key = Some("a".into());
+        assert_eq!(
+            config(BackendChoice::Auto, s.clone()).resolve().unwrap(),
+            BackendChoice::Anthropic
+        );
+        assert_eq!(
+            config(BackendChoice::Gemini, s).resolve().unwrap(),
+            BackendChoice::Gemini
+        );
+    }
+
+    #[test]
+    fn builds_each_provider_with_saved_or_overridden_model() {
+        let s = Settings {
+            openai_api_key: Some("o".into()),
+            openai_model: Some("gpt-6-luna".into()),
+            gemini_api_key: Some("g".into()),
+            ..Default::default()
+        };
+        let openai = build_backend(&config(BackendChoice::OpenAi, s.clone())).unwrap();
+        assert_eq!(openai.label(), "openai:gpt-6-luna");
+        let mut c = config(BackendChoice::Gemini, s.clone());
+        assert_eq!(
+            build_backend(&c).unwrap().label(),
+            "gemini:gemini-3.8-flash"
+        );
+        c.model = Some("gemini-4-argon".into());
+        assert_eq!(build_backend(&c).unwrap().label(), "gemini:gemini-4-argon");
+        let err = build_backend(&config(BackendChoice::Anthropic, s))
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("anthropic-key"), "{err}");
     }
 }

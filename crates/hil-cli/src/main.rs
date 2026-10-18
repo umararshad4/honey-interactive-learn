@@ -10,8 +10,9 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use console::style;
-use hil_core::llm::{BackendChoice, BackendConfig, build_backend};
+use hil_core::llm::{BackendChoice, BackendConfig, LlmBackend, build_backend};
 use hil_core::model::{Depth, Lesson, Source, Style};
+use hil_core::settings::Settings;
 use hil_core::source::{FetchOptions, Link};
 use hil_core::{Library, generate_lesson};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -95,6 +96,23 @@ enum Command {
     Rm { lesson: String },
     /// Check that yt-dlp, whisper and a language model are available.
     Doctor,
+    /// Show or change settings (provider, API keys, models).
+    Config {
+        #[command(subcommand)]
+        action: Option<ConfigAction>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfigAction {
+    /// Show current settings (keys masked). The default action.
+    Show,
+    /// Set a value, e.g. `hil config set backend openai` or `hil config set openai-key <key>`.
+    Set { field: String, value: String },
+    /// Clear a value.
+    Unset { field: String },
+    /// Print the settings file path.
+    Path,
 }
 
 #[derive(Args, Clone)]
@@ -105,24 +123,31 @@ struct GenArgs {
     /// brief, compact or comprehensive.
     #[arg(short, long, default_value = "compact", env = "HIL_DEPTH")]
     depth: Depth,
-    /// auto, claude-cli or api.
-    #[arg(long, env = "HIL_BACKEND", default_value = "auto")]
-    backend: BackendChoice,
-    /// Model override (API default: claude-opus-5-5).
-    #[arg(long, env = "HIL_MODEL")]
+    /// Provider: auto, claude-cli, anthropic, openai or gemini (default: settings, then auto).
+    #[arg(short, long)]
+    backend: Option<BackendChoice>,
+    /// Model for this run (defaults: claude-opus-5-5, gpt-6-astra, gemini-3.8-flash).
+    #[arg(long)]
     model: Option<String>,
-    /// API effort: low, medium, high, xhigh or max.
-    #[arg(long, env = "HIL_EFFORT")]
+    /// Reasoning effort for API providers: low, medium, high, xhigh or max.
+    #[arg(long)]
     effort: Option<String>,
 }
 
 impl GenArgs {
+    /// Settings file + environment, then these flags on top.
     fn backend_config(&self) -> BackendConfig {
-        BackendConfig {
-            choice: self.backend,
-            model: self.model.clone(),
-            effort: self.effort.clone(),
+        let mut config = BackendConfig::load();
+        if let Some(choice) = self.backend {
+            config.choice = choice;
         }
+        if self.model.is_some() {
+            config.model = self.model.clone();
+        }
+        if self.effort.is_some() {
+            config.effort = self.effort.clone();
+        }
+        config
     }
 }
 
@@ -139,6 +164,7 @@ fn run(cli: Cli) -> Result<()> {
             doctor();
             Ok(())
         }
+        Command::Config { action } => config(action.unwrap_or(ConfigAction::Show)),
         Command::Transcript { url, no_transcribe } => {
             let source = fetch_with_spinner(&url, !no_transcribe)?;
             println!("{}", source.text);
@@ -162,6 +188,8 @@ fn run_with_library(command: Command, library: &Library) -> Result<()> {
             no_quiz,
         } => {
             let canonical = Link::parse(&url)?.canonical_url();
+            // Fail on a missing key before spending time on the download.
+            let backend = build_backend(&gen_opts.backend_config())?;
             let source = match library.find_source(&canonical).filter(|_| !refresh) {
                 Some(cached) => {
                     eprintln!(
@@ -172,7 +200,7 @@ fn run_with_library(command: Command, library: &Library) -> Result<()> {
                 }
                 None => fetch_with_spinner(&url, !no_transcribe)?,
             };
-            let lesson = write_lesson(&source, &gen_opts, library)?;
+            let lesson = write_lesson(&source, &gen_opts, backend.as_ref(), library)?;
             view::print_lesson(&lesson, &[], false);
             next_steps(&lesson);
             let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
@@ -188,7 +216,8 @@ fn run_with_library(command: Command, library: &Library) -> Result<()> {
         }
         Command::Restyle { lesson, gen_opts } => {
             let old = library.resolve(&lesson)?;
-            let lesson = write_lesson(&old.source, &gen_opts, library)?;
+            let backend = build_backend(&gen_opts.backend_config())?;
+            let lesson = write_lesson(&old.source, &gen_opts, backend.as_ref(), library)?;
             view::print_lesson(&lesson, &[], false);
             next_steps(&lesson);
             Ok(())
@@ -239,7 +268,9 @@ fn run_with_library(command: Command, library: &Library) -> Result<()> {
             );
             Ok(())
         }
-        Command::Doctor | Command::Transcript { .. } => unreachable!("handled in run"),
+        Command::Doctor | Command::Transcript { .. } | Command::Config { .. } => {
+            unreachable!("handled in run")
+        }
     }
 }
 
@@ -273,15 +304,19 @@ fn fetch_with_spinner(url: &str, transcribe: bool) -> Result<Source> {
     Ok(source)
 }
 
-fn write_lesson(source: &Source, opts: &GenArgs, library: &Library) -> Result<Lesson> {
-    let backend = build_backend(&opts.backend_config())?;
+fn write_lesson(
+    source: &Source,
+    opts: &GenArgs,
+    backend: &dyn LlmBackend,
+    library: &Library,
+) -> Result<Lesson> {
     let pb = spinner(&format!(
         "Writing a {} {} lesson with {}…",
         opts.depth,
         opts.style,
         backend.label()
     ));
-    let result = generate_lesson(source, opts.style, opts.depth, backend.as_ref());
+    let result = generate_lesson(source, opts.style, opts.depth, backend);
     pb.finish_and_clear();
     let lesson = result?;
     library.save(&lesson)?;
@@ -305,7 +340,8 @@ fn doctor() {
         "{}",
         style("Honey Interactive Learn: environment check").bold()
     );
-    for check in hil_core::doctor::run_checks() {
+    let config = BackendConfig::load();
+    for check in hil_core::doctor::run_checks(&config) {
         let mark = if check.ok {
             style("✓").green()
         } else {
@@ -316,8 +352,49 @@ fn doctor() {
             println!("    {} {}", style("→").yellow(), check.hint);
         }
     }
+    match config.resolve() {
+        Ok(choice) => println!(
+            "  {} lessons will be written with: {} ({})",
+            style("•").dim(),
+            style(choice.title()).bold(),
+            if config.choice == BackendChoice::Auto {
+                "auto"
+            } else {
+                "chosen in settings"
+            }
+        ),
+        Err(e) => println!("  {} {e:#}", style("✗").red()),
+    }
     match Library::open_default() {
         Ok(lib) => println!("  {} library: {}", style("•").dim(), lib.dir().display()),
         Err(e) => println!("  {} library: {e:#}", style("✗").red()),
     }
+}
+
+fn config(action: ConfigAction) -> Result<()> {
+    let path = Settings::path()?;
+    let mut settings = Settings::load()?;
+    match action {
+        ConfigAction::Show => {
+            println!("{}", style(path.display()).dim());
+            for (name, value) in settings.display_rows() {
+                println!("  {:<18} {value}", style(name).bold());
+            }
+            println!(
+                "{}",
+                style("Environment variables (ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, HIL_BACKEND, HIL_MODEL, HIL_EFFORT) override these.").dim()
+            );
+            return Ok(());
+        }
+        ConfigAction::Path => {
+            println!("{}", path.display());
+            return Ok(());
+        }
+        ConfigAction::Set { field, value } => settings.set(&field, &value),
+        ConfigAction::Unset { field } => settings.set(&field, ""),
+    }
+    .map_err(anyhow::Error::msg)?;
+    settings.save()?;
+    eprintln!("{} saved {}", style("✓").green(), path.display());
+    Ok(())
 }

@@ -115,6 +115,9 @@ impl HilApp {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        if let Some((settings, _)) = &self.settings {
+            return div().flex_1().min_w_0().h_full().child(settings.clone());
+        }
         let body = match self.selected_lesson() {
             Some(lesson) => v_flex()
                 .size_full()
@@ -193,7 +196,10 @@ impl HilApp {
                     .child(Tag::primary().small().child(lesson.style.label()))
                     .child(Tag::secondary().small().child(lesson.depth.label()))
                     .child(link)
-                    .when_some(author, |el, a| el.child(ui::muted(a, cx))),
+                    .when_some(author, |el, a| el.child(ui::muted(a, cx)))
+                    .when(!lesson.generator.is_empty(), |el| {
+                        el.child(ui::muted(format!("· written by {}", lesson.generator), cx))
+                    }),
             )
             .child(
                 h_flex()

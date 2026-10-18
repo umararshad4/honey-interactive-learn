@@ -44,7 +44,7 @@ Take the quiz now? [Y/n]
 - **Practice built in.** An interactive MCQ quiz with explanations, score history and a "review these" list. Flip-style flashcards. Open questions with model answers.
 - **Diagrams everywhere.** An ASCII diagram for the terminal and the app, and a Mermaid diagram in Markdown exports, which renders on GitHub, Obsidian and VS Code.
 - **One library.** The CLI and the desktop app share the same saved lessons. `restyle` rewrites a saved lesson in another style without re-downloading the source.
-- **Your model, your account.** Uses your existing **Claude Code** login through the `claude` CLI, or the **Anthropic API** when `ANTHROPIC_API_KEY` is set.
+- **Your model, your account.** Use **Anthropic (Claude)**, **OpenAI** or **Google Gemini** with your own API key, or your existing **Claude Code** login through the `claude` CLI with no key at all. Pick the provider in the app's Settings or with `hil config`.
 
 ## Install
 
@@ -55,23 +55,29 @@ Take the quiz now? [Y/n]
 | `yt-dlp` | YouTube captions and video audio | `brew install yt-dlp` |
 | `ffmpeg` | Audio decoding for Whisper | `brew install ffmpeg` |
 | `whisper` *(optional)* | Videos without captions, X videos | `pipx install openai-whisper` |
-| `claude` **or** `ANTHROPIC_API_KEY` | Writing the lesson | [Claude Code](https://claude.com/claude-code), or an [API key](https://console.anthropic.com/) |
+| One AI provider | Writing the lesson | An [Anthropic](https://console.anthropic.com/), [OpenAI](https://platform.openai.com/api-keys) or [Gemini](https://aistudio.google.com/apikey) API key, **or** [Claude Code](https://claude.com/claude-code) logged in |
 
 Run `hil doctor` to check them all.
 
-### Prebuilt binaries
+### Desktop app (macOS)
 
-Download from [Releases](https://github.com/umararshad4/honey-interactive-learn/releases):
+1. Download `Honey-Interactive-Learn-<version>-aarch64.zip` (Apple Silicon) or `-x86_64.zip` (Intel) from [Releases](https://github.com/umararshad4/honey-interactive-learn/releases).
+2. Unzip it and drag **Honey Interactive Learn.app** to **Applications**.
+3. The first time, right-click the app → **Open** (it is ad-hoc signed, not notarized). Or run `xattr -dr com.apple.quarantine "/Applications/Honey Interactive Learn.app"`.
+4. Open **Settings** (gear icon), choose a provider and paste your API key.
 
-- `hil`: macOS (Apple Silicon, Intel) and Linux x86_64
-- `hil-desktop`: macOS (Apple Silicon)
+Or build and install it from source: `packaging/macos/bundle.sh --install`.
+
+When opened from the Dock or Finder, the app reads `PATH` and any `*_API_KEY` variables from your login shell. Tools installed with Homebrew and keys exported in `~/.zshrc` therefore work there too.
+
+### CLI binaries
+
+Download `hil` for macOS (Apple Silicon, Intel) or Linux x86_64 from [Releases](https://github.com/umararshad4/honey-interactive-learn/releases):
 
 ```sh
-tar xzf hil-v0.1.0-aarch64-apple-darwin.tar.gz
-mv hil-v0.1.0-aarch64-apple-darwin/hil /usr/local/bin/
+tar xzf hil-v0.2.0-aarch64-apple-darwin.tar.gz
+mv hil-v0.2.0-aarch64-apple-darwin/hil /usr/local/bin/
 ```
-
-The binaries are not code-signed. On macOS, run `xattr -d com.apple.quarantine ./hil` if Gatekeeper blocks them.
 
 ### From source
 
@@ -81,10 +87,10 @@ Requires Rust 1.88+ for the CLI, and a recent stable Rust for the desktop app.
 # CLI
 cargo install --git https://github.com/umararshad4/honey-interactive-learn hil-cli
 
-# Desktop app (macOS; Linux needs GPUI's system libraries)
+# Desktop app as a real macOS .app in /Applications
 git clone https://github.com/umararshad4/honey-interactive-learn
 cd honey-interactive-learn
-cargo run --release -p hil-desktop
+packaging/macos/bundle.sh --install
 ```
 
 ## CLI usage
@@ -102,9 +108,14 @@ hil cards 1                           # flashcards
 hil restyle 1 -s deep                 # same source, new style
 hil export 1 -o lesson.md             # Markdown with Mermaid diagram
 hil export 1 --json                   # raw lesson JSON
+hil learn <url> -b openai             # pick the provider for one run
 hil transcript <url>                  # just the extracted text
 hil rm 1
-hil doctor
+hil doctor                            # tools, keys and which provider will be used
+hil config                            # show settings (keys masked)
+hil config set backend gemini         # auto | claude-cli | anthropic | openai | gemini
+hil config set openai-key <key>       # anthropic-key | openai-key | gemini-key
+hil config set openai-model gpt-6-luna
 ```
 
 Supported links: `youtube.com/watch?v=…`, `youtu.be/…`, `/shorts/…`, `/live/…`, `x.com/<user>/status/<id>`, `twitter.com/…`, `fxtwitter.com/…`.
@@ -116,6 +127,7 @@ Supported links: `youtube.com/watch?v=…`, `youtu.be/…`, `/shorts/…`, `/liv
 - **Sidebar:** a link box, style and depth pickers, and your library with best quiz scores.
 - **Lesson tabs:** Overview, Diagram, Code, Examples, Flashcards (click to flip), Quiz (click an answer to see green/red feedback and the explanation), Q&A and Glossary.
 - **Restyle** a lesson in place, and **export Markdown**.
+- **Settings:** choose the AI provider, paste API keys and override models. These settings are shared with the CLI.
 
 | Overview | Diagram | Quiz |
 |---|---|---|
@@ -125,15 +137,31 @@ Launch options: `hil-desktop --select <id-prefix> --tab quiz` opens a lesson str
 
 ## Configuration
 
+Settings live in `settings.json` in the data directory below, and `hil config` or the app's Settings edit that file. The file is readable only by you. Environment variables override it.
+
+### Providers
+
+| Provider | Key | Default model | Notes |
+|---|---|---|---|
+| `anthropic` | `ANTHROPIC_API_KEY` / `anthropic-key` | `claude-opus-5-5` | Structured outputs, streaming, server-side refusal fallback |
+| `openai` | `OPENAI_API_KEY` / `openai-key` | `gpt-6-astra` | Responses API with strict JSON schema |
+| `gemini` | `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) / `gemini-key` | `gemini-3.8-flash` | `generateContent` with JSON schema |
+| `claude-cli` | none, uses your Claude Code login | your Claude Code default | Runs `claude -p` headless with tools disabled |
+
+With `auto` (the default), the first available provider is used, in this order: Anthropic key, OpenAI key, Gemini key, then the `claude` CLI.
+
+### Environment variables
+
 | Variable | Default | Meaning |
 |---|---|---|
-| `HIL_BACKEND` | `auto` | `auto` (API if `ANTHROPIC_API_KEY` is set, otherwise `claude`), `claude-cli` or `api` |
-| `HIL_MODEL` | API: `claude-opus-5-5`; CLI: your Claude Code default | Model override |
-| `HIL_EFFORT` | `high` | API effort: `low`, `medium`, `high`, `xhigh` or `max` |
+| `HIL_BACKEND` | `auto` | `auto`, `claude-cli`, `anthropic`, `openai` or `gemini` |
+| `HIL_MODEL` | see the table above | Model override for the chosen provider |
+| `HIL_EFFORT` | provider default | Reasoning effort: `low`, `medium`, `high`, `xhigh` or `max` (Anthropic, OpenAI) |
 | `HIL_STYLE` / `HIL_DEPTH` | `plain` / `compact` | CLI defaults |
 | `HIL_WHISPER_MODEL` | `base` | Whisper model (`tiny`, `small`, `medium`, `large`…) |
 | `HIL_HOME` | platform data dir | Library location (`~/Library/Application Support/honey-interactive-learn` on macOS, `~/.local/share/honey-interactive-learn` on Linux) |
-| `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` | none | Anthropic API credentials and endpoint |
+| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY` | none | Provider keys; these override saved settings |
+| `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, `GEMINI_BASE_URL` | official endpoints | Proxies or compatible gateways |
 
 ## How it works
 
@@ -144,7 +172,7 @@ flowchart LR
     B -->|X| D[FxTwitter thread<br/>+ Whisper for video]
     C --> E[Source text]
     D --> E
-    E --> F[Claude: structured JSON lesson<br/>style + depth]
+    E --> F[Claude / OpenAI / Gemini<br/>structured JSON lesson]
     F --> G[(Local library)]
     G --> H[hil CLI]
     G --> I[hil-desktop]
@@ -154,7 +182,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the crate layout and design
 
 ## Privacy
 
-Extraction runs on your machine. The extracted text is sent to Anthropic, through your Claude Code session or your API key, to write the lesson. Lessons are stored locally as JSON. Nothing else leaves your machine.
+Extraction runs on your machine. The extracted text is sent to the provider you choose (Anthropic, OpenAI or Google) to write the lesson. Lessons and settings are stored locally, and API keys are kept in a file readable only by you. Nothing else leaves your machine.
 
 ## Development
 
@@ -177,8 +205,8 @@ The [release workflow](.github/workflows/release.yml) builds the binaries and pu
 
 - More sources: articles and blogs, podcasts, PDFs
 - Spaced repetition for flashcards
-- More model providers (OpenAI-compatible, Ollama)
-- Signed macOS app bundle
+- Local models (Ollama)
+- Notarized macOS app, Linux and Windows desktop builds
 
 ## License
 

@@ -61,21 +61,25 @@ jobs:
 
   desktop:
     needs: create
-    name: hil-desktop (macOS arm64)
+    name: macOS app (${{ matrix.target }})
     runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release -p hil-desktop
-      - name: Package and upload
+      - run: packaging/macos/bundle.sh --zip --target ${{ matrix.target }}
+      - name: Upload
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          name="hil-desktop-${TAG}-aarch64-apple-darwin"
-          mkdir "$name"
-          cp target/release/hil-desktop README.md LICENSE "$name/"
-          tar czf "$name.tar.gz" "$name"
-          shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
-          gh release upload "$TAG" "$name.tar.gz" "$name.tar.gz.sha256"
+          cd target
+          zip_name="$(ls Honey-Interactive-Learn-*.zip)"
+          shasum -a 256 "$zip_name" > "$zip_name.sha256"
+          gh release upload "$TAG" "$zip_name" "$zip_name.sha256"

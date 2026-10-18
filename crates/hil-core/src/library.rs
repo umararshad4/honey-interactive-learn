@@ -11,16 +11,9 @@ pub struct Library {
 }
 
 impl Library {
-    /// `$HIL_HOME/lessons`, or the platform data dir
-    /// (`~/Library/Application Support/honey-interactive-learn` on macOS).
+    /// `<data dir>/lessons` (see [`crate::settings::data_dir`]).
     pub fn open_default() -> Result<Self> {
-        let root = match std::env::var_os("HIL_HOME") {
-            Some(home) => PathBuf::from(home),
-            None => dirs::data_dir()
-                .context("could not find a data directory for this platform")?
-                .join("honey-interactive-learn"),
-        };
-        Self::open(root)
+        Self::open(crate::settings::data_dir()?)
     }
 
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
